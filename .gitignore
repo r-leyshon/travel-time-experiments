@@ -1,3 +1,8 @@
+
+outputs/cardiff-supermarkets/*.png
+outputs/cardiff-supermarkets/*.html
+data
+_freeze
 .quarto
 travel-times-env
 
