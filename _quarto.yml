@@ -1,0 +1,20 @@
+project:
+  type: website
+  output-dir: docs
+  resources: outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png
+  render:
+    - "*.qmd"
+    - "!/./travel-times-env/"
+execute:
+  freeze: auto
+website:
+  title: "Travel Time Experiments"
+  search: false
+  navbar:
+    style: floating
+    title: "Homepage"
+format:
+  html:
+    theme: 
+      light: cosmo
+    toc: true
