@@ -1,0 +1,316 @@
+---
+title: "Analyse Supermaket Accessibility in Cardiff LAD"
+author: "Rich Leyshon"
+date: February 20 2024
+description: "Demonstrating a Method for Calculating Indiciative Travel Time Metrics"
+toc: true
+embed-resources: true
+image: /./outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png
+jupyter: 
+  kernelspec:
+    name: "conda-env-travel-times-env-py"
+    language: "python"
+    display_name: "travel-times-env"
+---
+
+
+```{python}
+from datetime import datetime, timedelta
+import os
+import subprocess
+
+import contextily as ctx
+import folium
+import geopandas as gpd
+from haversine import haversine, Unit
+import matplotlib.pyplot as plt
+import pandas as pd
+from pyprojroot import here
+import requests
+import r5py
+from shapely.geometry import LineString
+```
+
+## Load Supermarket Points
+
+```{python}
+supermarkets = pd.read_csv(here("data/external/features/geolytix_cut.csv"))
+super_gdf = gpd.GeoDataFrame(
+    supermarkets,
+    geometry=gpd.points_from_xy(
+        supermarkets["long_wgs"], supermarkets["lat_wgs"]
+        ),
+    crs="EPSG:4326")
+super_gdf["id"] = list(range(0, len(super_gdf)))# unique ID column for routing
+super_gdf.explore()
+
+```
+
+## Ingest Cardiff Boundary
+
+2023 boundary, full resolution clipped to coastline.
+
+```{python}
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Local_Authority_Districts_December_2023_Boundaries_UK_BFC/FeatureServer/0/query"
+PARAMS = {
+    "where": "LAD23CD = 'W06000015'",
+    "f": "geoJSON", 
+    "outFields": "*",
+    "outSR": 27700,
+}
+
+
+def get_ons_geo_data(endpoint:str, params:dict) -> gpd.GeoDataFrame:
+    "Cast json response to gdf"
+    resp = requests.get(endpoint, params=params)
+    if resp.ok:
+        content = resp.json()
+    else:
+        raise requests.RequestException(
+            f"HTTP {resp.status_code} : {resp.reason}")
+            
+    gdf = gpd.GeoDataFrame.from_features(
+        content["features"], crs=content["crs"]["properties"]["name"])
+
+    return content, gdf
+
+
+content, poly = get_ons_geo_data(ENDPOINT, PARAMS)
+poly.head()
+```
+
+```{python}
+# buffer by a km to avoid edge effects
+buffered_poly = gpd.GeoDataFrame(
+    {"geometry": poly.buffer(5000)},
+    crs=content["crs"]["properties"]["name"])
+buffered_poly.to_crs(4326, inplace=True)
+poly.to_crs(4326, inplace=True)
+proximal_supers = super_gdf.sjoin(buffered_poly)
+```
+
+
+```{python}
+fig, ax = plt.subplots()
+poly.plot(ax=ax, facecolor="red", alpha=0.4)
+buffered_poly.plot(ax=ax, facecolor="blue", alpha=0.2)
+proximal_supers.plot(ax=ax, color="blue", markersize=3)
+ctx.add_basemap(
+    ax,
+    crs=proximal_supers.crs.to_string(), source=ctx.providers.CartoDB.Voyager
+)
+plt.title(f"{len(proximal_supers)} Supermarkets Within 5 km Buffered Cardiff LAD extent")
+plt.tight_layout()
+plt.savefig("outputs/cardiff-supermarkets/cardiff-supermarkets-5km-buffer.png", dpi=400)
+
+```
+
+## By Output Area Population-Weighted Centroid
+
+Output Areas (December 2021) PWC (V3)
+
+```{python}
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_PWC_V3/FeatureServer/0/query"
+PARAMS["where"] = "OA21CD like 'W%'"
+PARAMS["resultOffset"] = 0
+PARAMS["outSR"] = 4326
+
+
+def get_ons_geo_paginated(endpoint:str, params:dict) -> gpd.GeoDataFrame:
+    content, gdf = get_ons_geo_data(ENDPOINT, PARAMS)
+    more_pages = content["properties"]["exceededTransferLimit"]
+    offset = len(gdf) # number of records to offset by
+    all_gdfs = gdf # append gdfs here
+    while more_pages:
+        params["resultOffset"] += offset # increment the records
+        content, gdf = get_ons_geo_data(endpoint, params)
+        all_gdfs = pd.concat([all_gdfs, gdf])
+        try:
+            more_pages = content["properties"]["exceededTransferLimit"]
+        except KeyError:
+            # rather than exceededTransferLimit = False, it disappears...
+            more_pages = False
+    all_gdfs = all_gdfs.reset_index(drop=True)
+    return all_gdfs
+
+
+# PARAMS["returnCountOnly"] = True
+# 10275 Welsh centroids
+centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
+len(centroids)
+```
+
+```{python}
+cardiff_centroids = centroids.sjoin(poly)
+fig, ax = plt.subplots()
+poly.plot(ax=ax, facecolor="red", alpha=0.4)
+buffered_poly.plot(ax=ax, facecolor="blue", alpha=0.2)
+proximal_supers.plot(ax=ax, color="blue", markersize=3)
+ctx.add_basemap(
+    ax,
+    crs=proximal_supers.crs.to_string(), source=ctx.providers.CartoDB.Voyager
+)
+plt.title(f"{len(cardiff_centroids)} Centroids Within Cardiff LAD extent")
+cardiff_centroids.plot(ax=ax, color="green", markersize=3, alpha=0.2)
+plt.tight_layout()
+plt.savefig("outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png", dpi=400)
+```
+
+```{python}
+# get osm data
+osm_pth = here("data/external/osm/wales-latest.osm.pbf")
+if not os.path.exists(osm_pth):
+  subprocess.run(
+      [
+        "curl",
+        "https://download.geofabrik.de/europe/united-kingdom/wales-latest.osm.pbf",
+        "-o",
+        osm_pth,])
+```
+
+Here is where the Java dependency kicks in...
+
+```{python}
+transport_network = r5py.TransportNetwork(osm_pth)
+# adjust all centroids to transport network
+cardiff_centroids["snapped_geometry"] = transport_network.snap_to_network(
+    cardiff_centroids["geometry"],
+    radius=100,
+    street_mode=r5py.TransportMode.WALK,
+)
+```
+
+```{python}
+# snap distance summaries
+# reverse the lonlat to latlon
+cardiff_centroids["snap_dist_m"] = cardiff_centroids.apply(
+    lambda row:haversine(
+        (row["geometry"].y, row["geometry"].x),
+        (row["snapped_geometry"].y, row["snapped_geometry"].x),
+        unit=Unit.METERS), axis=1)
+
+cardiff_centroids["snap_dist_m"].plot.hist(
+    bins=50,
+    title="Distribution of coordinate snap distance in point plane (m)"
+    )
+plt.show()
+```
+
+```{python}
+largest_snaps = cardiff_centroids.copy(deep=True)
+# retrieve the top n rows where coordinates adjusted by the greatest dist.
+n = 20
+largest_snaps = largest_snaps.sort_values(
+    by="snap_dist_m", ascending=False).head(n)
+# create the LineString geometry
+largest_snaps["lines"] = largest_snaps.apply(
+    lambda row: LineString([row["geometry"], row["snapped_geometry"]]),
+    axis=1
+)
+z_start = 11
+# original geometry layer
+imap = largest_snaps.explore(
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(color="red", icon="ban", prefix="fa"),
+    },
+    map_kwds={
+        "center": {"lat": 51.478, "lng": -3.165}
+    },
+    zoom_start=z_start,
+)
+# snapped geometry layer
+imap = largest_snaps.set_geometry("snapped_geometry").explore(
+    m=imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(color="green", icon="person-walking", prefix="fa"),
+    }
+)
+# line geometry layer
+imap = largest_snaps.set_geometry("lines").explore(
+    m=imap,
+    zoom_start=z_start
+)
+imap
+```
+
+```{python}
+# drop the original centroids in favour of snapped geoms
+cardiff_centroids.drop(
+    columns=["geometry", "snap_dist_m"], axis=1, inplace=True)
+cardiff_centroids.rename(columns={
+    "snapped_geometry": "geometry",
+    "OA21CD": "id",
+    }, inplace=True)
+cardiff_centroids.set_geometry("geometry", inplace=True)
+```
+
+```{python}
+dept_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+
+travel_time_matrix = r5py.TravelTimeMatrixComputer(
+    transport_network,
+    origins=cardiff_centroids,
+    destinations=proximal_supers,
+    transport_modes=[r5py.TransportMode.WALK, r5py.TransportMode.CAR],
+    departure=dept_time,
+    departure_time_window=timedelta(minutes=60), # every minute until 9am
+    snap_to_network=False,
+    max_time=timedelta(minutes=60),
+    speed_walking = 4.8, # default is 3.6km/h
+
+).compute_travel_times()
+
+travel_time_matrix.dropna().head()
+```
+
+### Engineer Travel Time Matrix
+
+Calculate median travel time across each supermarket. This gives us a median
+travel time from all centroids to all reachable supermarkets. Also need to
+merge to geometries to add spatial context. Going with 2021 boundaries
+generalised to 20m resolution as just for mapping a centroid value.
+
+Other features of interest may be:
+
+* number of reachable supermarkets
+* an 'effective population served within 1 hour by car and by foot'.
+* an accessibility statistic such as the ratio of reachable / proximal
+supermarkets. eg the number of supermarkets you can reach through the transport
+network as a proportion of the number within a crow's flight radius.
+
+```{python}
+med_tts = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BGC_V2/FeatureServer/0/query"
+PARAMS["where"] = "OA21CD like 'W%'"
+PARAMS["resultOffset"] = 0
+
+oa_polys = get_ons_geo_paginated(ENDPOINT, PARAMS)
+len(oa_polys)
+```
+
+```{python}
+median_tt_oa = med_tts.join(oa_polys.set_index("OA21CD"))
+median_tt_oa = gpd.GeoDataFrame(median_tt_oa, crs=4326)
+median_tt_oa.head()
+```
+
+```{python}
+imap = median_tt_oa.explore("travel_time", cmap="viridis_r", tiles="CartoDB positron")
+imap = proximal_supers.explore(
+    m=imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(color="red", icon="cart-shopping", prefix="fa"),
+    }
+)
+imap.save("outputs/cardiff-supermarkets/median_tt_to_supermarkets_5km_buffer.html")
+imap
+```
+
+This is one option for calculation of origins. Population-weighted centroids
+are ok, but I would advise taking a gridded approach, using
+[Global Human Settlement Layer](https://ghsl.jrc.ec.europa.eu/) or equivalent.
+Finer spatial resolution, down to 10m grids if you really wanted that. There
+are some caveats with this data that I can point out if helpful.

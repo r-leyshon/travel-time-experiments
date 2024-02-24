@@ -1,0 +1,24 @@
+---
+title: "Travel Time Experiments"
+author: "Rich Leyshon"
+date-modified: today
+resources:
+  - .nojekyll
+listing:
+    id: main-listing
+    type: default
+    contents:
+        - /./[!index]*.qmd
+    sort:
+        - "date desc"
+        - "title desc"
+    sort-ui: [title, date]
+    filter-ui: true
+    categories: false
+    date-format: medium
+    max-items: 10
+    fields: [image, date, title, description, author, reading-time]
+---
+
+::: {#main-listing}
+:::
