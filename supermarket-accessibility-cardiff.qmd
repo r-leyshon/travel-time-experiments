@@ -6,6 +6,8 @@ description: "Demonstrating a Method for Calculating Indiciative Travel Time Met
 toc: true
 embed-resources: true
 image: /./outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png
+execute:
+  freeze: true
 jupyter: 
   kernelspec:
     name: "conda-env-travel-times-env-py"
