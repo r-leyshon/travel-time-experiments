@@ -1,0 +1,213 @@
+---
+title: "Analyse GP Surgery Accessibility in Wolthamstow"
+author: "Rich Leyshon"
+date: February 25 2024
+description: "Locations Provided by Open Street Map Data"
+toc: true
+embed-resources: true
+jupyter: 
+  kernelspec:
+    name: "conda-env-travel-times-env-py"
+    language: "python"
+    display_name: "travel-times-env"
+---
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+from datetime import datetime
+import glob
+import os
+from pathlib import Path
+import subprocess
+from time import sleep
+import toml
+
+import geopandas as gpd
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderUnavailable
+from geopy import point
+import pandas as pd
+from pyprojroot import here
+from shapely import geometry
+
+from transport_performance.osm.osm_utils import filter_osm
+
+# get private user agent
+USER_AGENT = toml.load(here(".secrets.toml"))["nominatim"]["USER_AGENT"]
+```
+
+* Ingest London OSM.
+
+London OSM doesn't include Loughton & Cheshunt. To avoid edge effects, ingest
+England OSM latest & filter to custom bounding box.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+osm_pth = here("data/external/osm/england-latest-osm.pbf")
+if not os.path.exists(osm_pth):
+    subprocess.run(
+        [
+            "curl",
+            "https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf", "-o",
+            osm_pth
+            ])
+
+```
+
+* Clip London OSM to custom BBOX
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+filtered_osm_pth = here("data/external/osm/wolthamstow-aoi-osm.pbf")
+BBOX = [-0.368022,51.432659,0.296356,51.765395]
+if not os.path.exists(filtered_osm_pth):
+    filter_osm(pbf_pth=osm_pth, out_pth=filtered_osm_pth, bbox=BBOX, tag_filter=False)
+```
+
+
+* Locate GP surgeries.
+
+From [NHS Service Search](https://www.nhs.uk/service-search/other-services/GP/)
+, surgeries within 50 miles serving Hoe Street, Wolthamstow. Postcodes provided
+and will need to be geocoded. Investigate whether coordinates are available in
+[NHS developer portal](https://developer.api.nhs.uk/nhs-api), registration
+required.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+surg_pth = here("data/external/features/nhs-surgeries-E17-3AX.csv")
+if not os.path.exists(surg_pth):
+    subprocess.run([
+        "curl",
+        "https://www.nhs.uk/service-search/other-services/GP/E17-3AX/Export/4/-0.0193444043397903/51.5837821960449/4/0?distance=50&ResultsOnPageValue=10&isNational=0&totalItems=2845&currentPage=1",
+        "-o",
+        surg_pth
+    ])
+
+surgeries = pd.read_csv(surg_pth)
+surgeries = surgeries.loc[:, ["Organisation Name", "PostCode"]]
+surgeries["id"] = list(range(0, len(surgeries)))
+
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+def get_surgery_locs_nominatim(
+    df: pd.DataFrame, out_pth: Path, sleep_s:float=2.0, user: str = USER_AGENT
+    ) -> None:
+    """Use orgnm and then postcode to attempt geolocating surgeries. 
+    
+    Uses Nominatim. Writes to file if error encountered. 
+    """
+    tmp_df = df.copy(deep=True)
+    # Instantiate a new Nominatim client
+    app = Nominatim(
+        user_agent="")
+    tmp_df["lat"] = 0.0
+    tmp_df["lon"] = 0.0
+    tmp_df["geocode_type"] = "None"
+    geocode_type = []
+    for i, row in tmp_df.iterrows():
+        loc = {"lon": 0.0, "lat": 0.0}
+        geo_type = "None"
+        try:
+            loc = app.geocode(
+                query=row["Organisation Name"],
+                country_codes="gb",
+                viewbox=[
+                    point.Point(51.375, -0.509), point.Point(51.868, 0.530)],
+                bounded=True)
+            print("Geocode by Org Name success")
+            sleep(sleep_s)
+            geo_type = "from_nm"
+            if not loc:
+                # case where name did not return a location
+                loc = app.geocode(
+                    query=row["PostCode"],
+                    country_codes="gb",
+                    viewbox=[
+                        point.Point(51.375, -0.509), point.Point(51.868, 0.530)
+                        ],
+                    bounded=True)
+                print("Geocode by Postcode success")
+                sleep(sleep_s)
+                geo_type = "from_pcd"
+        except GeocoderUnavailable:
+            # nominatim is down
+            print(f"Breaking on {row['Organisation Name']}")
+            break
+        finally:
+            # update the geometry column
+            if loc:
+                loc = loc.raw
+                tmp_df.loc[i, ["lat"]] = loc["lat"]
+                tmp_df.loc[i, ["lon"]] = loc["lon"]
+                tmp_df.loc[i, ["geocode_type"]] = geo_type
+            else:
+                break
+    tmp_df.to_csv(out_pth)
+    return tmp_df
+
+```
+
+
+```{python}
+#| eval: false
+#| code-fold: true
+#| code-summary: "Click to show code"
+# execute once only as hammers the nominatim service
+geocoded_surgeries_pth = here(
+    "data/external/features/geocoded-london-surgeries.csv")
+if not os.path.exists(geocoded_surgeries_pth):
+    get_surgery_locs_nominatim(df=surgeries, out_pth=cache_pth, sleep_s=2.0)
+
+```
+
+Present the geocoded surgeries.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+geocd_pth = here("data/external/features/").glob("geocode-surgeries-*")
+geocd_surgeries = pd.read_csv(list(geocd_pth)[0], index_col=0)
+geocd_surgeries = geocd_surgeries.dropna()
+geocd_surgeries = gpd.GeoDataFrame(geocd_surgeries, geometry=gpd.points_from_xy(geocd_surgeries["lon"], geocd_surgeries["lat"]), crs=4326)
+geocd_surgeries.drop(["lat", "lon"], axis=1, inplace=True)
+geocd_surgeries.explore()
+```
+
+Note that the accuracy varies dependent upon whether the surgeries were
+geolocated from the organisation name or the postcode. Most are from postcode. Accuracy of these points will depend on size of postcode.
+
+```{python}
+code_stats = geocd_surgeries["geocode_type"].describe()
+print(f"{round((code_stats.freq / len(geocd_surgeries)) * 100, 1)} % of {len(geocd_surgeries)} surgeries were geocoded by postcode.")
+
+```
+
+* get package utilities set up for ons ingest.
+
+* Ingest Pop-weighted centroids. Filter pattern for London Boroughs?
+
+* if above not possible, ingest Wolthamstow LAD boundary
+
+* Clip centroids to LAD extent
+
+* Buffer LAD by 5km
+
+* Clip GP surgeries to 5km buffer
+
+* Compute travel times from centroids to proximal surgeries
+
+* Group by from_id summarise with median gets median tt to surgeries
+
+* Ingest OA boundaries to match centroids
+
+* Join median tts to OA boundaries by OA21CD - check codes with centroids first
+
+* Chloropleth map median_tt, points with surgeries
