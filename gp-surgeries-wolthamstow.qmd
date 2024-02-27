@@ -55,7 +55,8 @@ if not os.path.exists(osm_pth):
     subprocess.run(
         [
             "curl",
-            "https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf", "-o",
+            "https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf",
+            "-o",
             osm_pth
             ])
 
@@ -69,7 +70,8 @@ if not os.path.exists(osm_pth):
 filtered_osm_pth = here("data/external/osm/walthamstow-aoi-osm.pbf")
 BBOX = [-0.368022,51.432659,0.296356,51.765395]
 if not os.path.exists(filtered_osm_pth):
-    filter_osm(pbf_pth=osm_pth, out_pth=filtered_osm_pth, bbox=BBOX, tag_filter=False)
+    filter_osm(
+        pbf_pth=osm_pth, out_pth=filtered_osm_pth, bbox=BBOX, tag_filter=False)
 ```
 
 
@@ -181,24 +183,34 @@ Present the geocoded surgeries.
 geocd_pth = here("data/external/features/").glob("geocode-surgeries-*")
 geocd_surgeries = pd.read_csv(list(geocd_pth)[0], index_col=0)
 geocd_surgeries = geocd_surgeries.dropna()
-geocd_surgeries = gpd.GeoDataFrame(geocd_surgeries, geometry=gpd.points_from_xy(geocd_surgeries["lon"], geocd_surgeries["lat"]), crs=4326)
+geocd_surgeries = gpd.GeoDataFrame(
+    geocd_surgeries,
+    geometry=gpd.points_from_xy(
+        geocd_surgeries["lon"], geocd_surgeries["lat"]), crs=4326)
 geocd_surgeries.drop(["lat", "lon"], axis=1, inplace=True)
 geocd_surgeries.explore()
 ```
 
-Note that the accuracy varies dependent upon whether the surgeries were
-geolocated from the organisation name or the postcode. Most are from postcode. Accuracy of these points will depend on size of postcode.
+Note that the accuracy of surgery location varies dependent upon whether the
+surgeries were geolocated from the organisation name or the postcode. Most are
+from postcode. Accuracy of these points will depend on size of postcode.
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 code_stats = geocd_surgeries["geocode_type"].describe()
-print(f"{round((code_stats.freq / len(geocd_surgeries)) * 100, 1)} % of {len(geocd_surgeries)} surgeries were geocoded by postcode.")
+print(
+    f"{round((code_stats.freq / len(geocd_surgeries)) * 100, 1)} % of "
+    f"{len(geocd_surgeries)} surgeries were geocoded by postcode.")
 
 ```
 
 
-* Ingest Pop-weighted centroids. Filter pattern for London Boroughs is "E000"
+Ingest Pop-weighted centroids.
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_PWC_V3/FeatureServer/0/query"
 
 PARAMS = {
@@ -211,22 +223,29 @@ PARAMS = {
 resp = requests.get(ENDPOINT, PARAMS)
 cont = resp.json()
 n_centroids = cont['properties']['count']
-print(f"There are {n_centroids:,} OA Centroids with the specified OA21CD pattern")
+print(
+    f"There are {n_centroids:,} OA Centroids with the specified OA21CD pattern"
+    )
 
 ```
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 PARAMS["returnCountOnly"] = False
 PARAMS["resultOffset"] = 0
 centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
 print(f"All centroids ingested? {len(centroids) == n_centroids}")
 ```
 
-* ingest Wolthamstow LAD boundary
+Ingest Wolthamstow LAD boundary
 
-Going with LAD21 to match centroid release, though 23 is available. LADCD for Wolthamstow is E09000031.
+Going with LAD21 to match centroid release, though 23 is available. LADCD for
+Wolthamstow is E09000031.
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/LAD_Dec_2021_GB_BFC_2022/FeatureServer/0/query"
 PARAMS["where"] = "LAD21CD = 'E09000031'"
 del PARAMS["resultOffset"]
@@ -235,9 +254,13 @@ _, boundary = get_ons_geo_data(ENDPOINT, PARAMS)
 boundary.explore()
 ```
 
-* Buffer LAD by 5km
+Buffer the LAD boundary to avoid edge effects - people may prefer surgeries in
+the adjacent local authority. Buffer by 5km, pretty arbitrary rule of thumb
+that can be adjusted to suit.
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 buffered_bound = gpd.GeoDataFrame({"geometry": boundary.buffer(5000)})
 
 imap = boundary.explore(
@@ -253,11 +276,14 @@ imap = buffered_bound.explore(
 imap
 ```
 
-Keep the centroids within the LAD boundary (blue). Keep the GP surgeries within the 5km buffer (purple).
+Use the centroids within the LAD boundary (blue). Use the GP surgeries within
+the 5km buffer (purple).
 
 * Clip Points to Polygon extents
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 # clip centroids to LAD boundary
 boundary = boundary.to_crs(4326)
 walth_centroids = centroids.sjoin(boundary)
@@ -272,7 +298,8 @@ imap = proximal_gps.explore(
     m=imap,
     marker_type="marker",
     marker_kwds={
-        "icon": folium.map.Icon(color="green", icon="briefcase-medical", prefix="fa")
+        "icon": folium.map.Icon(
+            color="green", icon="briefcase-medical", prefix="fa")
     }
 )
 imap
@@ -283,11 +310,9 @@ These are the journey origins (navy) and destinations (green).
 * Compute travel times from centroids to proximal surgeries
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 tn = r5py.TransportNetwork(filtered_osm_pth)
-
-```
-
-```{python}
 # journey time with todays date
 walth_centroids["id"] = list(range(0, len(walth_centroids)))
 proximal_gps["id"] = list(range(0, len(proximal_gps)))
@@ -303,43 +328,63 @@ travel_time_matrix = r5py.TravelTimeMatrixComputer(
     snap_to_network=True,
     max_time=timedelta(minutes=30), # 30 minute journey max 
 ).compute_travel_times()
-
+travel_time_matrix.head()
 ```
 
-* Group by from_id summarise with median gets median tt to surgeries
-
-* Ingest OA boundaries to match centroids
+Calculate median travel times across surgeries.
 
 ```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
 med_tts = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
 ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BFC_V8/FeatureServer/0/query"
 PARAMS["where"] = "OA21CD LIKE 'E%'"
 PARAMS["resultOffset"] = 0
 PARAMS["outSR"] = 4326
-
 oa_polys = get_ons_geo_paginated(ENDPOINT, PARAMS)
-len(oa_polys)
-
-```
-
-* Join median tts to OA boundaries by OA21CD 
-
-```{python}
 
 waltham_tts = med_tts.join(walth_centroids.set_index("id"))
-
-waltham_tts = waltham_tts.set_index("OA21CD").join(oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+waltham_tts = waltham_tts.set_index("OA21CD").join(
+    oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
 waltham_tts = gpd.GeoDataFrame(waltham_tts, geometry="geometry_r", crs=4326)
+waltham_tts.head()
 ```
 
-* Chloropleth map median_tt, points with surgeries
+## Median Travel Time from Centroids to Surgeries
+
+Use the selection widget on the right of the map to toggle layers on and off.
 
 ```{python}
-imap = waltham_tts[["geometry_r", "travel_time"]].explore("travel_time", cmap="viridis_r", tiles="CartoDB positron", zoom_start=10)
+#| code-fold: true
+#| code-summary: "Click to show code"
+imap = waltham_tts[["geometry_r", "travel_time"]].explore(
+    "travel_time",
+    cmap="viridis_r",
+    tiles="CartoDB positron",
+    zoom_start=12,
+    name="OA21 polygons")
 imap = proximal_gps.explore(
-    m=imap, color="orange",
+    m = imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(
+            color="green", icon="briefcase-medical", prefix="fa"),
+    }, name="destinations"
 )
-imap.save("outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
+imap = walth_centroids.reset_index()[["geometry", "OA21CD"]].explore(
+    m=imap, color="navy", opacity=0.2, name="origins")
+imap.save(
+    "outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
+folium.LayerControl().add_to(imap)
 imap
 
 ```
+
+This is an interesting situation - the high density of destinations in this
+locality could form the basis for a different treatment of proximal surgeries.
+The median travel time will be from one output area centroid to every GP on the
+map. 
+
+It may not be reasonable to consider all these options for each centroid. You
+could potentially draw a smaller buffer around each output area instead, and
+then calculate travel times to a smaller subset of proximal GPs.
