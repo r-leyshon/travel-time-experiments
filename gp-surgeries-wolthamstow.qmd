@@ -1,10 +1,11 @@
 ---
-title: "Analyse GP Surgery Accessibility in Wolthamstow"
+title: "Analyse GP Surgery Accessibility in Walthamstow"
 author: "Rich Leyshon"
 date: February 27 2024
 description: "Locations Provided by Open Street Map Data"
 toc: true
 embed-resources: true
+image: /./outputs/walthamstow-surgeries/centroids-surgeries-5km-buffer.png
 jupyter: 
   kernelspec:
     name: "conda-env-travel-times-env-py"
@@ -23,11 +24,13 @@ import subprocess
 from time import sleep
 import toml
 
+import contextily as ctx
 import folium
 import geopandas as gpd
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderUnavailable
 from geopy import point
+import matplotlib.pyplot as plt
 import pandas as pd
 from pyprojroot import here
 import r5py
@@ -276,6 +279,7 @@ imap = buffered_bound.explore(
 imap
 ```
 
+
 Use the centroids within the LAD boundary (blue). Use the GP surgeries within
 the 5km buffer (purple).
 
@@ -303,6 +307,25 @@ imap = proximal_gps.explore(
     }
 )
 imap
+```
+
+```{python}
+#| include: false
+#| output: false
+fig, ax = plt.subplots()
+boundary.plot(ax=ax, facecolor="red", alpha=0.4)
+buffered_bound.plot(ax=ax, facecolor="blue", alpha=0.2)
+proximal_gps.plot(ax=ax, color="blue", markersize=3)
+ctx.add_basemap(
+    ax,
+    crs=proximal_gps.crs.to_string(), source=ctx.providers.CartoDB.Voyager
+)
+plt.title(f"{len(proximal_gps)} Surgeries Within 5km Buffered Walthamstow LAD extent")
+walth_centroids.plot(ax=ax, color="green", markersize=3, alpha=0.2)
+plt.tight_layout()
+plt.savefig(
+    "outputs/walthamstow-surgeries/centroids-surgeries-5km-buffer.png", dpi=400
+    )
 ```
 
 These are the journey origins (navy) and destinations (green).

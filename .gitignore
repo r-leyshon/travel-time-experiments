@@ -2,6 +2,7 @@
 .secrets.toml
 outputs/cardiff-supermarkets/*.png
 outputs/cardiff-supermarkets/*.html
+outputs/walthamstow-surgeries
 data
 _freeze
 .quarto

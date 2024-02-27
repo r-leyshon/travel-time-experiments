@@ -1,7 +1,9 @@
 project:
   type: website
   output-dir: docs
-  resources: outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png
+  resources:
+    - outputs/cardiff-supermarkets/cardiff-centroids-supermarkets-5km-buffer.png
+    - /./outputs/walthamstow-surgeries/centroids-surgeries-5km-buffer.png
   render:
     - "*.qmd"
     - "!/./travel-times-env/"
