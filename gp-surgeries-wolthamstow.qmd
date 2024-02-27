@@ -1,7 +1,7 @@
 ---
 title: "Analyse GP Surgery Accessibility in Wolthamstow"
 author: "Rich Leyshon"
-date: February 25 2024
+date: February 27 2024
 description: "Locations Provided by Open Street Map Data"
 toc: true
 embed-resources: true
@@ -15,7 +15,7 @@ jupyter:
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-from datetime import datetime
+from datetime import datetime, timedelta
 import glob
 import os
 from pathlib import Path
@@ -23,15 +23,20 @@ import subprocess
 from time import sleep
 import toml
 
+import folium
 import geopandas as gpd
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderUnavailable
 from geopy import point
 import pandas as pd
 from pyprojroot import here
+import r5py
+import requests
 from shapely import geometry
 
 from transport_performance.osm.osm_utils import filter_osm
+
+from travel_time_experiments.ingest_ons_geo import get_ons_geo_data, get_ons_geo_paginated
 
 # get private user agent
 USER_AGENT = toml.load(here(".secrets.toml"))["nominatim"]["USER_AGENT"]
@@ -61,7 +66,7 @@ if not os.path.exists(osm_pth):
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-filtered_osm_pth = here("data/external/osm/wolthamstow-aoi-osm.pbf")
+filtered_osm_pth = here("data/external/osm/walthamstow-aoi-osm.pbf")
 BBOX = [-0.368022,51.432659,0.296356,51.765395]
 if not os.path.exists(filtered_osm_pth):
     filter_osm(pbf_pth=osm_pth, out_pth=filtered_osm_pth, bbox=BBOX, tag_filter=False)
@@ -190,24 +195,151 @@ print(f"{round((code_stats.freq / len(geocd_surgeries)) * 100, 1)} % of {len(geo
 
 ```
 
-* get package utilities set up for ons ingest.
 
-* Ingest Pop-weighted centroids. Filter pattern for London Boroughs?
+* Ingest Pop-weighted centroids. Filter pattern for London Boroughs is "E000"
 
-* if above not possible, ingest Wolthamstow LAD boundary
+```{python}
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_PWC_V3/FeatureServer/0/query"
 
-* Clip centroids to LAD extent
+PARAMS = {
+    "where": "OA21CD like 'E%'",
+    "f": "geoJSON", 
+    "outFields": "*",
+    "outSR": 4326,
+    "returnCountOnly": True,
+}
+resp = requests.get(ENDPOINT, PARAMS)
+cont = resp.json()
+n_centroids = cont['properties']['count']
+print(f"There are {n_centroids:,} OA Centroids with the specified OA21CD pattern")
+
+```
+
+```{python}
+PARAMS["returnCountOnly"] = False
+PARAMS["resultOffset"] = 0
+centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
+print(f"All centroids ingested? {len(centroids) == n_centroids}")
+```
+
+* ingest Wolthamstow LAD boundary
+
+Going with LAD21 to match centroid release, though 23 is available. LADCD for Wolthamstow is E09000031.
+
+```{python}
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/LAD_Dec_2021_GB_BFC_2022/FeatureServer/0/query"
+PARAMS["where"] = "LAD21CD = 'E09000031'"
+del PARAMS["resultOffset"]
+PARAMS["outSR"] = 27700 # get in BNG as will need to buffer
+_, boundary = get_ons_geo_data(ENDPOINT, PARAMS)
+boundary.explore()
+```
 
 * Buffer LAD by 5km
 
-* Clip GP surgeries to 5km buffer
+```{python}
+buffered_bound = gpd.GeoDataFrame({"geometry": boundary.buffer(5000)})
+
+imap = boundary.explore(
+    map_kwds={
+        "center": {"lat": 51.603, "lng": -0.018}
+    },
+    zoom_start=10)
+imap = buffered_bound.explore(
+    m=imap,
+    style_kwds=dict(
+        color="purple", weight=1, fillOpacity=0.3
+        ))
+imap
+```
+
+Keep the centroids within the LAD boundary (blue). Keep the GP surgeries within the 5km buffer (purple).
+
+* Clip Points to Polygon extents
+
+```{python}
+# clip centroids to LAD boundary
+boundary = boundary.to_crs(4326)
+walth_centroids = centroids.sjoin(boundary)
+# clip surgeries to buffer
+buffered_bound = buffered_bound.to_crs(4326)
+proximal_gps = geocd_surgeries.sjoin(buffered_bound)
+imap = walth_centroids.explore(map_kwds={
+        "center": {"lat": 51.603, "lng": -0.018}
+    },
+    zoom_start=11.5, color="navy")
+imap = proximal_gps.explore(
+    m=imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(color="green", icon="briefcase-medical", prefix="fa")
+    }
+)
+imap
+```
+
+These are the journey origins (navy) and destinations (green).
 
 * Compute travel times from centroids to proximal surgeries
+
+```{python}
+tn = r5py.TransportNetwork(filtered_osm_pth)
+
+```
+
+```{python}
+# journey time with todays date
+walth_centroids["id"] = list(range(0, len(walth_centroids)))
+proximal_gps["id"] = list(range(0, len(proximal_gps)))
+dept_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+
+travel_time_matrix = r5py.TravelTimeMatrixComputer(
+    tn,
+    origins=walth_centroids,
+    destinations=proximal_gps,
+    transport_modes=[r5py.TransportMode.CAR, r5py.TransportMode.WALK],
+    departure=dept_time,
+    departure_time_window=timedelta(minutes=10), # Up to 08:10
+    snap_to_network=True,
+    max_time=timedelta(minutes=30), # 30 minute journey max 
+).compute_travel_times()
+
+```
 
 * Group by from_id summarise with median gets median tt to surgeries
 
 * Ingest OA boundaries to match centroids
 
-* Join median tts to OA boundaries by OA21CD - check codes with centroids first
+```{python}
+med_tts = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
+ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BFC_V8/FeatureServer/0/query"
+PARAMS["where"] = "OA21CD LIKE 'E%'"
+PARAMS["resultOffset"] = 0
+PARAMS["outSR"] = 4326
+
+oa_polys = get_ons_geo_paginated(ENDPOINT, PARAMS)
+len(oa_polys)
+
+```
+
+* Join median tts to OA boundaries by OA21CD 
+
+```{python}
+
+waltham_tts = med_tts.join(walth_centroids.set_index("id"))
+
+waltham_tts = waltham_tts.set_index("OA21CD").join(oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+waltham_tts = gpd.GeoDataFrame(waltham_tts, geometry="geometry_r", crs=4326)
+```
 
 * Chloropleth map median_tt, points with surgeries
+
+```{python}
+imap = waltham_tts[["geometry_r", "travel_time"]].explore("travel_time", cmap="viridis_r", tiles="CartoDB positron")
+imap = proximal_gps.explore(
+    m=imap, color="orange",
+)
+imap.save("outputs/cardiff-supermarkets/median_tt_to_supermarkets_5km_buffer.html")
+imap
+
+```
