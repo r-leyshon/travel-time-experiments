@@ -335,11 +335,11 @@ waltham_tts = gpd.GeoDataFrame(waltham_tts, geometry="geometry_r", crs=4326)
 * Chloropleth map median_tt, points with surgeries
 
 ```{python}
-imap = waltham_tts[["geometry_r", "travel_time"]].explore("travel_time", cmap="viridis_r", tiles="CartoDB positron")
+imap = waltham_tts[["geometry_r", "travel_time"]].explore("travel_time", cmap="viridis_r", tiles="CartoDB positron", zoom_start=10)
 imap = proximal_gps.explore(
     m=imap, color="orange",
 )
-imap.save("outputs/cardiff-supermarkets/median_tt_to_supermarkets_5km_buffer.html")
+imap.save("outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
 imap
 
 ```
