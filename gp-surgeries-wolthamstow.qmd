@@ -13,6 +13,22 @@ jupyter:
     display_name: "travel-times-env"
 ---
 
+## Introduction
+
+A brief summary of notebook:
+
+* Travel times from Output Area population-weighted centroids to GP surgeries
+in Walthamstow.
+* Transport modality is by foot and by private car.
+* Surgeries are geolocated from postcodes using open street map's Nominatim
+API. This would not scale well so other location data sources should be
+explored.
+* Scaling out to other areas hinges on the ability to provide location data for
+the services of interest.
+* Including bus & rail modes is possible and subject to the peculiarities of
+GTFS data within the area of interest. Modelling bus & rail for other areas of
+UK would be trivial.
+
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
@@ -39,13 +55,17 @@ from shapely import geometry
 
 from transport_performance.osm.osm_utils import filter_osm
 
-from travel_time_experiments.ingest_ons_geo import get_ons_geo_data, get_ons_geo_paginated
+from travel_time_experiments.ingest_ons_geo import (
+    get_ons_geo_data, get_ons_geo_paginated
+    )
 
 # get private user agent
 USER_AGENT = toml.load(here(".secrets.toml"))["nominatim"]["USER_AGENT"]
 ```
 
-* Ingest London OSM.
+## Ingest Data
+
+Ingest London Open Street Map.
 
 London OSM doesn't include Loughton & Cheshunt. To avoid edge effects, ingest
 England OSM latest & filter to custom bounding box.
@@ -65,7 +85,7 @@ if not os.path.exists(osm_pth):
 
 ```
 
-* Clip London OSM to custom BBOX
+Clip London OSM to custom BBOX
 
 ```{python}
 #| code-fold: true
@@ -77,8 +97,7 @@ if not os.path.exists(filtered_osm_pth):
         pbf_pth=osm_pth, out_pth=filtered_osm_pth, bbox=BBOX, tag_filter=False)
 ```
 
-
-* Locate GP surgeries.
+Ingest GP Addresses.
 
 From [NHS Service Search](https://www.nhs.uk/service-search/other-services/GP/)
 , surgeries within 50 miles serving Hoe Street, Wolthamstow. Postcodes provided
@@ -103,6 +122,8 @@ surgeries = surgeries.loc[:, ["Organisation Name", "PostCode"]]
 surgeries["id"] = list(range(0, len(surgeries)))
 
 ```
+
+Geolocate GP Surgeries.
 
 ```{python}
 #| code-fold: true
@@ -209,7 +230,7 @@ print(
 ```
 
 
-Ingest Pop-weighted centroids.
+Ingest Population-Weighted Centroids.
 
 ```{python}
 #| code-fold: true
@@ -257,6 +278,8 @@ _, boundary = get_ons_geo_data(ENDPOINT, PARAMS)
 boundary.explore()
 ```
 
+## Engineering the Data
+
 Buffer the LAD boundary to avoid edge effects - people may prefer surgeries in
 the adjacent local authority. Buffer by 5km, pretty arbitrary rule of thumb
 that can be adjusted to suit.
@@ -278,7 +301,6 @@ imap = buffered_bound.explore(
         ))
 imap
 ```
-
 
 Use the centroids within the LAD boundary (blue). Use the GP surgeries within
 the 5km buffer (purple).
@@ -320,7 +342,9 @@ ctx.add_basemap(
     ax,
     crs=proximal_gps.crs.to_string(), source=ctx.providers.CartoDB.Voyager
 )
-plt.title(f"{len(proximal_gps)} Surgeries Within 5km Buffered Walthamstow LAD extent")
+plt.title(
+    f"{len(proximal_gps)} Surgeries Within 5km Buffered Walthamstow LAD extent"
+    )
 walth_centroids.plot(ax=ax, color="green", markersize=3, alpha=0.2)
 plt.tight_layout()
 plt.savefig(
@@ -330,7 +354,9 @@ plt.savefig(
 
 These are the journey origins (navy) and destinations (green).
 
-* Compute travel times from centroids to proximal surgeries
+## Calculate Travel Times
+
+Compute travel times from centroids to proximal surgeries
 
 ```{python}
 #| code-fold: true
@@ -373,7 +399,9 @@ waltham_tts = gpd.GeoDataFrame(waltham_tts, geometry="geometry_r", crs=4326)
 waltham_tts.head()
 ```
 
-## Median Travel Time from Centroids to Surgeries
+## Present Results
+
+### Option 1: Walthamstow 5km Buffer
 
 Use the selection widget on the right of the map to toggle layers on and off.
 
@@ -411,3 +439,47 @@ map.
 It may not be reasonable to consider all these options for each centroid. You
 could potentially draw a smaller buffer around each output area instead, and
 then calculate travel times to a smaller subset of proximal GPs.
+
+
+### Option 2: Nearest 3 Surgeries
+
+This option is used to model greater patient discrimination in surgery
+selection, due to the wealth of surgeries in the vicinity. In this scenario, 
+patients select from the 3 surgeries with the smallest travel time only. Each
+centroid gets a median travel time across these 3 shortest journies only.
+
+```{python}
+fast_3 = travel_time_matrix.sort_values(["from_id", "travel_time"], ascending=[True, True]).groupby("from_id").head(3).drop("to_id", axis=1).groupby("from_id").median()
+
+med_tts = fast_3.join(walth_centroids.set_index("id"))
+med_tts = med_tts.set_index("OA21CD").join(oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+med_tts = gpd.GeoDataFrame(med_tts, geometry="geometry_r", crs=4326)
+
+imap = med_tts[["geometry_r", "travel_time"]].explore(
+    "travel_time",
+    cmap="viridis_r",
+    tiles="CartoDB positron",
+    zoom_start=12,
+    name="OA21 polygons")
+imap = proximal_gps.explore(
+    m = imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(
+            color="green", icon="briefcase-medical", prefix="fa"),
+    }, name="destinations"
+)
+imap = walth_centroids.reset_index()[["geometry", "OA21CD"]].explore(
+    m=imap, color="navy", opacity=0.2, name="origins")
+imap.save(
+    "outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
+folium.LayerControl().add_to(imap)
+imap
+
+```
+
+
+### Option 3: Outut Area 1km buffer
+
+
+## Validation
