@@ -58,6 +58,8 @@ from transport_performance.osm.osm_utils import filter_osm
 from travel_time_experiments.ingest_ons_geo import (
     get_ons_geo_data, get_ons_geo_paginated
     )
+from travel_time_experiments.munge_gpd import add_linestring_col
+from travel_time_experiments.viz_gpd import viz_revised_coordinates
 
 # get private user agent
 USER_AGENT = toml.load(here(".secrets.toml"))["nominatim"]["USER_AGENT"]
@@ -258,8 +260,12 @@ print(
 #| code-summary: "Click to show code"
 PARAMS["returnCountOnly"] = False
 PARAMS["resultOffset"] = 0
-centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
-print(f"All centroids ingested? {len(centroids) == n_centroids}")
+centroids_pth = here("data/external/ons-geo/oa-centroids-2021.parquet")
+if not os.path.exists(centroids_pth):
+    centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
+    print(f"All centroids ingested? {len(centroids) == n_centroids}")
+else:
+    centroids = gpd.read_parquet(centroids_pth)
 ```
 
 Ingest Wolthamstow LAD boundary
@@ -354,6 +360,108 @@ plt.savefig(
 
 These are the journey origins (navy) and destinations (green).
 
+## Adjust Point Locations
+
+As many of the points will not be situated in routable locations, it can be beneficial to use the transport network to 'snap' the locations to the nearest feature of the network. This will often be the nearest node, but could also be configured as the nearest junction or bus stop. 
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+tn = r5py.TransportNetwork(filtered_osm_pth)
+
+```
+
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+walth_centroids["snapped_geometry"] = tn.snap_to_network(
+    walth_centroids["geometry"],
+    radius=75,
+    street_mode=r5py.TransportMode.WALK,
+)
+# snap surgeries
+proximal_gps["snapped_geometry"] = tn.snap_to_network(
+    proximal_gps["geometry"],
+    radius=115,
+    street_mode=r5py.TransportMode.WALK,
+)
+```
+
+How far were the surgery locations adjusted?
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+proximal_gps["snap_dist_m"].describe()
+
+```
+
+75 % of the surgeries were revised within 20 metres. 
+
+```{python}
+proximal_gps["snap_dist_m"].plot.hist(bins=20, title="Distribution of Surgery Snap Distance in Metres")
+
+```
+
+
+Visualise the 10 surgery locations that were snapped farthest.
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+# visualise snapped geometry
+proximal_gps = add_linestring_col(proximal_gps)
+viz_revised_coordinates(proximal_gps.sort_values(by=["snap_dist_m"], ascending=[False]).head(6))
+```
+
+Note that there are some issues with the data. There are entries that share the same postcode that appear to be duplicate entries, these are overplotted on the maps but can be revealed with a little random noise.
+
+It is also apparent that the quality of geocoding is variable. In the worst case, Nightingale House Surgery has been geocoded from postcode at a local school on Nightingale Road, some 600 metres away. Visual inspection of point samples confirm that this is the exception rather than the rule, but a cut of the geolytix surgery location data or equivalent would be best.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+oa_polys_pth = here("data/external/ons-geo/oa-polys-2021-BFC.parquet")
+if not os.path.exists(oa_polys_pth):
+    ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BFC_V8/FeatureServer/0/query"
+    PARAMS["where"] = "OA21CD LIKE 'E%'"
+    PARAMS["resultOffset"] = 0
+    PARAMS["outSR"] = 4326
+    oa_polys = get_ons_geo_paginated(ENDPOINT, PARAMS)
+    oa_polys.to_parquet(oa_polys_pth)
+else:
+    oa_polys = gpd.read_parquet(oa_polys_pth)
+
+walth_polys = oa_polys.set_index("OA21CD").join(walth_centroids.set_index("OA21CD"), how="right", lsuffix="_l", rsuffix="_r")
+walth_polys.set_geometry("geometry_l", inplace=True)
+```
+
+```{python}
+walth_centroids["snap_dist_m"].describe()
+```
+
+Most of the centroids have been adjusted by less than 25 metres. Though there is at least one case snapped to over 70 metres. 
+
+```{python}
+walth_centroids["snap_dist_m"].plot.hist(bins=20, title="Distribution of Centroid Snap Distance in Metres")
+```
+
+It is likely that these snapped centroids now fall outside of the output area polygon they were intended to represent. Inspect the 10 largest revisions, check that they are within the bounds of their output area polygon.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Click to show code"
+walth_centroids = add_linestring_col(walth_centroids)
+imap = viz_revised_coordinates(walth_centroids[["snap_dist_m", "geometry", "OA21CD", "snapped_geometry", "lines"]].sort_values(by=["snap_dist_m"], ascending=[False]).head(10), zoom=11.5)
+
+imap = walth_polys.reset_index()[["OA21CD", "geometry_l"]].explore(m=imap,     style_kwds=dict(
+        color="black", weight=1, fillOpacity=0.1
+        ))
+imap
+```
+
+As can be seen from the map, some points now do fall outside of the polygon they are intended to represent. We can account for this adjustment by adding an average walking time penalty to computed travel times.
+
 ## Calculate Travel Times
 
 Compute travel times from centroids to proximal surgeries
@@ -361,7 +469,6 @@ Compute travel times from centroids to proximal surgeries
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-tn = r5py.TransportNetwork(filtered_osm_pth)
 # journey time with todays date
 walth_centroids["id"] = list(range(0, len(walth_centroids)))
 proximal_gps["id"] = list(range(0, len(proximal_gps)))
@@ -386,12 +493,6 @@ Calculate median travel times across surgeries.
 #| code-fold: true
 #| code-summary: "Click to show code"
 med_tts = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
-ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BFC_V8/FeatureServer/0/query"
-PARAMS["where"] = "OA21CD LIKE 'E%'"
-PARAMS["resultOffset"] = 0
-PARAMS["outSR"] = 4326
-oa_polys = get_ons_geo_paginated(ENDPOINT, PARAMS)
-
 waltham_tts = med_tts.join(walth_centroids.set_index("id"))
 waltham_tts = waltham_tts.set_index("OA21CD").join(
     oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
@@ -482,4 +583,3 @@ imap
 ### Option 3: Outut Area 1km buffer
 
 
-## Validation
