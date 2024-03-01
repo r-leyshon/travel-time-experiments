@@ -465,10 +465,12 @@ As can be seen from the map, some points now do fall outside of the polygon they
 ```{python}
 #| include: false
 # tidy up environment & dataframes
-walth_centroids = walth_centroids[
-    ["geometry", "OA21CD",  "snapped_geometry", "lines", "snap_dist_m"]
+walth_centroids = walth_centroids.loc[:, ["OA21CD",  "snapped_geometry", "lines", "snap_dist_m"]
     ]
-walth_polys = walth_polys.reset_index()[["OA21CD", "geometry_l"]]
+walth_centroids.set_geometry("snapped_geometry", inplace=True)
+walth_polys = walth_polys.reset_index().loc[:, ["OA21CD", "geometry_l"]]
+proximal_gps.drop("geometry", axis=1, inplace=True)
+proximal_gps.set_geometry("snapped_geometry", inplace=True)
 del oa_polys
 del centroids
 ```
@@ -502,21 +504,19 @@ travel_time_matrix.head()
 
 Use walking speed of 4.8km/h, consistent with DfT travel time work.
 
-```{python}
-walth_centroids
-
-```
-
 Calculate median travel times across surgeries.
 
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
+walth_centroids["walk_penalty_mins"] = walth_centroids["snap_dist_m"] / 4800.0 * 60
 med_tts_1 = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
 med_tts_1 = med_tts_1.join(walth_centroids.set_index("id"))
+med_tts_1["travel_time"] = med_tts_1["travel_time"] + med_tts_1["walk_penalty_mins"]
+
 med_tts_1 = med_tts_1.set_index("OA21CD").join(
     walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
-med_tts_1 = gpd.GeoDataFrame(med_tts_1, geometry="snapped_geometry", crs=4326)
+med_tts_1 = gpd.GeoDataFrame(med_tts_1, geometry="geometry_l", crs=4326)
 med_tts_1.head()
 ```
 
@@ -535,7 +535,7 @@ imap = med_tts_1.explore(
     tiles="CartoDB positron",
     zoom_start=12,
     name="OA21 polygons")
-imap = proximal_gps.explore(
+imap = proximal_gps.set_geometry("snapped_geometry").explore(
     m = imap,
     marker_type="marker",
     marker_kwds={
@@ -543,7 +543,7 @@ imap = proximal_gps.explore(
             color="green", icon="briefcase-medical", prefix="fa"),
     }, name="destinations"
 )
-imap = walth_centroids.reset_index()[["geometry", "OA21CD"]].explore(
+imap = walth_centroids.set_geometry("snapped_geometry").reset_index()[["snapped_geometry", "OA21CD"]].explore(
     m=imap, color="navy", opacity=0.2, name="origins")
 imap.save(
     "outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
@@ -576,6 +576,8 @@ fast_3 = travel_time_matrix.sort_values(
         "from_id").head(3).drop("to_id", axis=1).groupby("from_id").median()
 
 med_tts_2 = fast_3.join(walth_centroids.set_index("id"))
+med_tts_2["travel_time"] = med_tts_2["travel_time"] + \
+    med_tts_2["walk_penalty_mins"]
 med_tts_2 = med_tts_2.set_index(
     "OA21CD"
     ).join(walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
@@ -605,6 +607,58 @@ imap
 ```
 
 
-### Option 3: Outut Area 1km buffer
+### Option 3: Output Area 1km buffer
 
+Buffer each output area by 1km and consider travel times to surgeries falling
+within those extents only.
 
+```{python}
+walth_polys["buffered_oas"] = walth_polys.to_crs(
+    27700).buffer(1000).to_crs(4326)
+walth_polys.set_geometry("buffered_oas", inplace=True)
+
+```
+
+Find surgeries for each buffered output area.
+
+```{python}
+found_surgeries = gpd.GeoDataFrame()
+for i, r in walth_polys.iterrows():
+    buff_gdf = gpd.GeoDataFrame(
+        {"OA21CD": r["OA21CD"], "geometry": r["buffered_oas"]},
+        index=[0], crs=4326)
+    out_df = buff_gdf.sjoin(geocd_surgeries, how="right").dropna()
+    found_surgeries = gpd.GeoDataFrame(
+        pd.concat( [found_surgeries, out_df], ignore_index=True) )
+```
+
+Check on surgeries within one output area.
+
+```{python}
+
+which_oa = "E00021834"
+imap = found_surgeries.query("OA21CD == @which_oa").explore(
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(
+            color="green", icon="briefcase-medical", prefix="fa")
+    })
+# show the buffered polygon
+imap = walth_polys.query("OA21CD == @which_oa").explore(
+    m=imap, style_kwds={"color":"black", "fillOpacity":0.1})
+# show the original polygon
+imap = walth_polys.query("OA21CD == @which_oa").set_geometry("geometry_l").explore(
+    m=imap, style_kwds={"color": "purple", "fillOpacity":0.5}
+)
+# get all surgeries that are not within the buffered OA
+imap = geocd_surgeries.loc[~geocd_surgeries["geometry"].isin(
+    found_surgeries.query("OA21CD == @which_oa")["geometry"]), :].explore(
+    m=imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(
+            color="red", icon="briefcase-medical", prefix="fa")
+    }
+)
+imap
+```
