@@ -380,12 +380,14 @@ walth_centroids["snapped_geometry"] = tn.snap_to_network(
     radius=75,
     street_mode=r5py.TransportMode.WALK,
 )
+walth_centroids = add_linestring_col(walth_centroids)
 # snap surgeries
 proximal_gps["snapped_geometry"] = tn.snap_to_network(
     proximal_gps["geometry"],
     radius=115,
     street_mode=r5py.TransportMode.WALK,
 )
+proximal_gps = add_linestring_col(proximal_gps)
 ```
 
 How far were the surgery locations adjusted?
@@ -410,7 +412,6 @@ Visualise the 10 surgery locations that were snapped farthest.
 #| code-fold: true
 #| code-summary: "Click to show code"
 # visualise snapped geometry
-proximal_gps = add_linestring_col(proximal_gps)
 viz_revised_coordinates(proximal_gps.sort_values(by=["snap_dist_m"], ascending=[False]).head(6))
 ```
 
@@ -451,7 +452,6 @@ It is likely that these snapped centroids now fall outside of the output area po
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-walth_centroids = add_linestring_col(walth_centroids)
 imap = viz_revised_coordinates(walth_centroids[["snap_dist_m", "geometry", "OA21CD", "snapped_geometry", "lines"]].sort_values(by=["snap_dist_m"], ascending=[False]).head(10), zoom=11.5)
 
 imap = walth_polys.reset_index()[["OA21CD", "geometry_l"]].explore(m=imap,     style_kwds=dict(
@@ -461,6 +461,17 @@ imap
 ```
 
 As can be seen from the map, some points now do fall outside of the polygon they are intended to represent. We can account for this adjustment by adding an average walking time penalty to computed travel times.
+
+```{python}
+#| include: false
+# tidy up environment & dataframes
+walth_centroids = walth_centroids[
+    ["geometry", "OA21CD",  "snapped_geometry", "lines", "snap_dist_m"]
+    ]
+walth_polys = walth_polys.reset_index()[["OA21CD", "geometry_l"]]
+del oa_polys
+del centroids
+```
 
 ## Calculate Travel Times
 
@@ -492,12 +503,12 @@ Calculate median travel times across surgeries.
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-med_tts = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
-waltham_tts = med_tts.join(walth_centroids.set_index("id"))
-waltham_tts = waltham_tts.set_index("OA21CD").join(
-    oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
-waltham_tts = gpd.GeoDataFrame(waltham_tts, geometry="geometry_r", crs=4326)
-waltham_tts.head()
+med_tts_1 = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
+med_tts_1 = med_tts_1.join(walth_centroids.set_index("id"))
+med_tts_1 = med_tts_1.set_index("OA21CD").join(
+    walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+med_tts_1 = gpd.GeoDataFrame(med_tts_1, geometry="snapped_geometry", crs=4326)
+med_tts_1.head()
 ```
 
 ## Present Results
@@ -509,7 +520,7 @@ Use the selection widget on the right of the map to toggle layers on and off.
 ```{python}
 #| code-fold: true
 #| code-summary: "Click to show code"
-imap = waltham_tts[["geometry_r", "travel_time"]].explore(
+imap = med_tts_1.explore(
     "travel_time",
     cmap="viridis_r",
     tiles="CartoDB positron",
@@ -550,13 +561,18 @@ patients select from the 3 surgeries with the smallest travel time only. Each
 centroid gets a median travel time across these 3 shortest journies only.
 
 ```{python}
-fast_3 = travel_time_matrix.sort_values(["from_id", "travel_time"], ascending=[True, True]).groupby("from_id").head(3).drop("to_id", axis=1).groupby("from_id").median()
+fast_3 = travel_time_matrix.sort_values(
+    ["from_id", "travel_time"], ascending=[True, True]
+    ).groupby(
+        "from_id").head(3).drop("to_id", axis=1).groupby("from_id").median()
 
-med_tts = fast_3.join(walth_centroids.set_index("id"))
-med_tts = med_tts.set_index("OA21CD").join(oa_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
-med_tts = gpd.GeoDataFrame(med_tts, geometry="geometry_r", crs=4326)
+med_tts_2 = fast_3.join(walth_centroids.set_index("id"))
+med_tts_2 = med_tts_2.set_index(
+    "OA21CD"
+    ).join(walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+med_tts_2 = gpd.GeoDataFrame(med_tts_2, crs=4326, geometry="geometry_l")
 
-imap = med_tts[["geometry_r", "travel_time"]].explore(
+imap = med_tts_2.explore(
     "travel_time",
     cmap="viridis_r",
     tiles="CartoDB positron",
@@ -570,10 +586,10 @@ imap = proximal_gps.explore(
             color="green", icon="briefcase-medical", prefix="fa"),
     }, name="destinations"
 )
-imap = walth_centroids.reset_index()[["geometry", "OA21CD"]].explore(
+imap = walth_centroids.reset_index().explore(
     m=imap, color="navy", opacity=0.2, name="origins")
 imap.save(
-    "outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
+    "outputs/walthamstow-surgeries//median_tt_to_surgeries_3_closest.html")
 folium.LayerControl().add_to(imap)
 imap
 
