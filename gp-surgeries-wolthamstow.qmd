@@ -498,6 +498,15 @@ travel_time_matrix = r5py.TravelTimeMatrixComputer(
 travel_time_matrix.head()
 ```
 
+### Add a Walking Time Penalty
+
+Use walking speed of 4.8km/h, consistent with DfT travel time work.
+
+```{python}
+walth_centroids
+
+```
+
 Calculate median travel times across surgeries.
 
 ```{python}
