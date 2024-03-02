@@ -494,7 +494,7 @@ travel_time_matrix = r5py.TravelTimeMatrixComputer(
     transport_modes=[r5py.TransportMode.CAR, r5py.TransportMode.WALK],
     departure=dept_time,
     departure_time_window=timedelta(minutes=10), # Up to 08:10
-    snap_to_network=True,
+    snap_to_network=False,
     max_time=timedelta(minutes=30), # 30 minute journey max 
 ).compute_travel_times()
 travel_time_matrix.head()
@@ -614,8 +614,10 @@ within those extents only.
 
 ```{python}
 walth_polys["buffered_oas"] = walth_polys.to_crs(
-    27700).buffer(1000).to_crs(4326)
+    27700).buffer(1000)
 walth_polys.set_geometry("buffered_oas", inplace=True)
+walth_polys["buffered_area_m"] = walth_polys.area
+walth_polys.to_crs(4326, inplace=True)
 
 ```
 
@@ -635,13 +637,13 @@ for i, r in walth_polys.iterrows():
 Check on surgeries within one output area.
 
 ```{python}
-
 which_oa = "E00021834"
 imap = found_surgeries.query("OA21CD == @which_oa").explore(
     marker_type="marker",
+    zoom_start=11.5,
     marker_kwds={
         "icon": folium.map.Icon(
-            color="green", icon="briefcase-medical", prefix="fa")
+            color="green", icon="briefcase-medical", prefix="fa"),
     })
 # show the buffered polygon
 imap = walth_polys.query("OA21CD == @which_oa").explore(
@@ -661,4 +663,60 @@ imap = geocd_surgeries.loc[~geocd_surgeries["geometry"].isin(
     }
 )
 imap
+```
+
+
+Calculate  Number of surgeries and travel times for each output area
+
+```{python}
+n_surgeries = found_surgeries.groupby("OA21CD")["Organisation Name"].count().to_frame()
+walth_centroids = walth_centroids.set_index("OA21CD").join(n_surgeries).reset_index()
+walth_centroids.rename(columns={"Organisation Name": "n_surgeries"}, inplace=True)
+
+```
+
+```{python}
+opt_3_pth = here("data/interim/walthamstow-oa-1km-buffer-surgery-tts.parquet")
+if not os.path.exists(opt_3_pth):
+    tt_matrix_2 = pd.DataFrame()
+    for i, row in walth_centroids.iterrows():
+        row_gdf = gpd.GeoDataFrame({"id": row["id"], "geometry": row["snapped_geometry"]}, index=[0], crs=4326)
+        tts = r5py.TravelTimeMatrixComputer(
+            tn,
+            origins=row_gdf,
+            destinations=found_surgeries.query("OA21CD == @row['OA21CD']"),
+            transport_modes=[r5py.TransportMode.CAR, r5py.TransportMode.WALK],
+            departure=dept_time,
+            departure_time_window=timedelta(minutes=10), # Up to 08:10
+            snap_to_network=False,
+            max_time=timedelta(minutes=30), # 30 minute journey max 
+        ).compute_travel_times()
+        tt_matrix_2 = pd.concat([tt_matrix_2, tts])
+    tt_matrix_2.to_parquet(opt_3_pth)
+else:
+    tt_matrix_2 = pd.read_parquet(opt_3_pth)
+
+```
+
+With this option, the output areas are routed to unequal numbers of surgeries. Though every output area has at least one destination.
+
+```{python}
+med_tts_3 = tt_matrix_2.drop("to_id", axis=1).groupby("from_id").median()
+med_tts_3 = med_tts_3.join(walth_centroids.set_index("id"))
+# add the walk time penalty
+med_tts_3["travel_time"] = med_tts_3["travel_time"] + med_tts_3["walk_penalty_mins"]
+med_tts_3["n_surgeries"].describe()
+
+```
+
+As can be seen below, travel time does trend by the number of surgeries
+in scope of the buffered output areas. This scenario is distinct to options 1 and 2 in that respect.
+
+```{python}
+# normalise n_surgeries, get areas from the polygons
+med_tts_3 = walth_polys.loc[:, ["OA21CD", "buffered_area_m"]].set_index("OA21CD").join(med_tts_3.set_index("OA21CD"))
+med_tts_3["surgeries_per_km2"] = med_tts_3["n_surgeries"] / (med_tts_3["buffered_area_m"]/1_000_000)
+med_tts_3.plot.scatter(x="surgeries_per_km2", y="travel_time", title="Median Travel Time by Surgeries per KM2")
+plt.show()
+
 ```
