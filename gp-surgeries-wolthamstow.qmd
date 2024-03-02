@@ -6,6 +6,10 @@ description: "Locations Provided by Open Street Map Data"
 toc: true
 embed-resources: true
 image: /./outputs/walthamstow-surgeries/centroids-surgeries-5km-buffer.png
+format:
+  html:
+    code-fold: true
+    code-summary: "Click to show code"
 jupyter: 
   kernelspec:
     name: "conda-env-travel-times-env-py"
@@ -30,8 +34,6 @@ GTFS data within the area of interest. Modelling bus & rail for other areas of
 UK would be trivial.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 from datetime import datetime, timedelta
 import glob
 import os
@@ -73,8 +75,6 @@ London OSM doesn't include Loughton & Cheshunt. To avoid edge effects, ingest
 England OSM latest & filter to custom bounding box.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 osm_pth = here("data/external/osm/england-latest-osm.pbf")
 if not os.path.exists(osm_pth):
     subprocess.run(
@@ -84,14 +84,7 @@ if not os.path.exists(osm_pth):
             "-o",
             osm_pth
             ])
-
-```
-
-Clip London OSM to custom BBOX
-
-```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
+# Clip London OSM to custom BBOX
 filtered_osm_pth = here("data/external/osm/walthamstow-aoi-osm.pbf")
 BBOX = [-0.368022,51.432659,0.296356,51.765395]
 if not os.path.exists(filtered_osm_pth):
@@ -108,8 +101,6 @@ and will need to be geocoded. Investigate whether coordinates are available in
 required.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 surg_pth = here("data/external/features/nhs-surgeries-E17-3AX.csv")
 if not os.path.exists(surg_pth):
     subprocess.run([
@@ -118,18 +109,15 @@ if not os.path.exists(surg_pth):
         "-o",
         surg_pth
     ])
-
 surgeries = pd.read_csv(surg_pth)
 surgeries = surgeries.loc[:, ["Organisation Name", "PostCode"]]
 surgeries["id"] = list(range(0, len(surgeries)))
-
 ```
 
-Geolocate GP Surgeries.
+Geolocate GP Surgeries from address.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
+#| eval: false
 def get_surgery_locs_nominatim(
     df: pd.DataFrame, out_pth: Path, sleep_s:float=2.0, user: str = USER_AGENT
     ) -> None:
@@ -185,27 +173,16 @@ def get_surgery_locs_nominatim(
                 break
     tmp_df.to_csv(out_pth)
     return tmp_df
-
-```
-
-
-```{python}
-#| eval: false
-#| code-fold: true
-#| code-summary: "Click to show code"
 # execute once only as hammers the nominatim service
 geocoded_surgeries_pth = here(
     "data/external/features/geocoded-london-surgeries.csv")
 if not os.path.exists(geocoded_surgeries_pth):
     get_surgery_locs_nominatim(df=surgeries, out_pth=cache_pth, sleep_s=2.0)
-
 ```
 
 Present the geocoded surgeries.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 geocd_pth = here("data/external/features/").glob("geocode-surgeries-*")
 geocd_surgeries = pd.read_csv(list(geocd_pth)[0], index_col=0)
 geocd_surgeries = geocd_surgeries.dropna()
@@ -222,23 +199,16 @@ surgeries were geolocated from the organisation name or the postcode. Most are
 from postcode. Accuracy of these points will depend on size of postcode.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 code_stats = geocd_surgeries["geocode_type"].describe()
 print(
     f"{round((code_stats.freq / len(geocd_surgeries)) * 100, 1)} % of "
     f"{len(geocd_surgeries)} surgeries were geocoded by postcode.")
-
 ```
-
 
 Ingest Population-Weighted Centroids.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_PWC_V3/FeatureServer/0/query"
-
 PARAMS = {
     "where": "OA21CD like 'E%'",
     "f": "geoJSON", 
@@ -252,30 +222,25 @@ n_centroids = cont['properties']['count']
 print(
     f"There are {n_centroids:,} OA Centroids with the specified OA21CD pattern"
     )
-
 ```
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 PARAMS["returnCountOnly"] = False
 PARAMS["resultOffset"] = 0
 centroids_pth = here("data/external/ons-geo/oa-centroids-2021.parquet")
 if not os.path.exists(centroids_pth):
     centroids = get_ons_geo_paginated(ENDPOINT, PARAMS)
-    print(f"All centroids ingested? {len(centroids) == n_centroids}")
 else:
     centroids = gpd.read_parquet(centroids_pth)
+print(f"All centroids ingested? {len(centroids) == n_centroids}")
 ```
 
 Ingest Wolthamstow LAD boundary
 
-Going with LAD21 to match centroid release, though 23 is available. LADCD for
+Use LAD21 to match centroid release, though 23 is available. LADCD for
 Wolthamstow is E09000031.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/LAD_Dec_2021_GB_BFC_2022/FeatureServer/0/query"
 PARAMS["where"] = "LAD21CD = 'E09000031'"
 del PARAMS["resultOffset"]
@@ -291,10 +256,7 @@ the adjacent local authority. Buffer by 5km, pretty arbitrary rule of thumb
 that can be adjusted to suit.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 buffered_bound = gpd.GeoDataFrame({"geometry": boundary.buffer(5000)})
-
 imap = boundary.explore(
     map_kwds={
         "center": {"lat": 51.603, "lng": -0.018}
@@ -309,13 +271,9 @@ imap
 ```
 
 Use the centroids within the LAD boundary (blue). Use the GP surgeries within
-the 5km buffer (purple).
-
-* Clip Points to Polygon extents
+the 5km buffer (purple). Clip the points to Polygon extent.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 # clip centroids to LAD boundary
 boundary = boundary.to_crs(4326)
 walth_centroids = centroids.sjoin(boundary)
@@ -339,7 +297,6 @@ imap
 
 ```{python}
 #| include: false
-#| output: false
 fig, ax = plt.subplots()
 boundary.plot(ax=ax, facecolor="red", alpha=0.4)
 buffered_bound.plot(ax=ax, facecolor="blue", alpha=0.2)
@@ -362,19 +319,13 @@ These are the journey origins (navy) and destinations (green).
 
 ## Adjust Point Locations
 
-As many of the points will not be situated in routable locations, it can be beneficial to use the transport network to 'snap' the locations to the nearest feature of the network. This will often be the nearest node, but could also be configured as the nearest junction or bus stop. 
+As many of the points will not be situated in routable locations, it can be
+beneficial to use the transport network to 'snap' the locations to the nearest
+feature of the network. This will often be the nearest node, but could also be
+configured as the nearest junction or bus stop. 
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 tn = r5py.TransportNetwork(filtered_osm_pth)
-
-```
-
-
-```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 walth_centroids["snapped_geometry"] = tn.snap_to_network(
     walth_centroids["geometry"],
     radius=75,
@@ -388,40 +339,34 @@ proximal_gps["snapped_geometry"] = tn.snap_to_network(
     street_mode=r5py.TransportMode.WALK,
 )
 proximal_gps = add_linestring_col(proximal_gps)
-```
-
-How far were the surgery locations adjusted?
-
-```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 proximal_gps["snap_dist_m"].describe()
-
 ```
 
 75 % of the surgeries were revised within 20 metres. 
 
 ```{python}
-proximal_gps["snap_dist_m"].plot.hist(bins=20, title="Distribution of Surgery Snap Distance in Metres")
-
+proximal_gps["snap_dist_m"].plot.hist(
+    bins=20, title="Distribution of Surgery Snap Distance in Metres")
 ```
-
 
 Visualise the 10 surgery locations that were snapped farthest.
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 # visualise snapped geometry
-viz_revised_coordinates(proximal_gps.sort_values(by=["snap_dist_m"], ascending=[False]).head(6))
+viz_revised_coordinates(proximal_gps.sort_values(
+    by=["snap_dist_m"], ascending=[False]).head(10))
 ```
 
-Note that there are some issues with the data. There are entries that share the same postcode that appear to be duplicate entries, these are overplotted on the maps but can be revealed with a little random noise.
+Note that there are some issues with the data. There are entries that share the
+same postcode that appear to be duplicate entries, these are overplotted on the
+maps but can be revealed with a little random noise.
 
-It is also apparent that the quality of geocoding is variable. In the worst case, Nightingale House Surgery has been geocoded from postcode at a local school on Nightingale Road, some 600 metres away. Visual inspection of point samples confirm that this is the exception rather than the rule, but a cut of the geolytix surgery location data or equivalent would be best.
+It is also apparent that the quality of geocoding is variable. In the worst
+case, Nightingale House Surgery has been geocoded from postcode at a local
+school on Nightingale Road, some 600 metres away. Visual inspection of point
+samples confirm that this is the exception rather than the rule, but a cut of
+the geolytix surgery location data or equivalent would be best.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 oa_polys_pth = here("data/external/ons-geo/oa-polys-2021-BFC.parquet")
 if not os.path.exists(oa_polys_pth):
     ENDPOINT = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Output_Areas_2021_EW_BFC_V8/FeatureServer/0/query"
@@ -433,40 +378,46 @@ if not os.path.exists(oa_polys_pth):
 else:
     oa_polys = gpd.read_parquet(oa_polys_pth)
 
-walth_polys = oa_polys.set_index("OA21CD").join(walth_centroids.set_index("OA21CD"), how="right", lsuffix="_l", rsuffix="_r")
+walth_polys = oa_polys.set_index("OA21CD").join(
+    walth_centroids.set_index("OA21CD"),
+    how="right", lsuffix="_l", rsuffix="_r")
 walth_polys.set_geometry("geometry_l", inplace=True)
-```
-
-```{python}
 walth_centroids["snap_dist_m"].describe()
 ```
 
-Most of the centroids have been adjusted by less than 25 metres. Though there is at least one case snapped to over 70 metres. 
+Most of the centroids have been adjusted by less than 25 metres. Though there
+is at least one case snapped to over 70 metres. 
 
 ```{python}
-walth_centroids["snap_dist_m"].plot.hist(bins=20, title="Distribution of Centroid Snap Distance in Metres")
+walth_centroids["snap_dist_m"].plot.hist(
+    bins=20, title="Distribution of Centroid Snap Distance in Metres")
 ```
 
-It is likely that these snapped centroids now fall outside of the output area polygon they were intended to represent. Inspect the 10 largest revisions, check that they are within the bounds of their output area polygon.
+It is likely that these snapped centroids now fall outside of the output area
+polygon they were intended to represent. Inspect the 10 largest revisions,
+check that they are within the bounds of their output area polygon.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
-imap = viz_revised_coordinates(walth_centroids[["snap_dist_m", "geometry", "OA21CD", "snapped_geometry", "lines"]].sort_values(by=["snap_dist_m"], ascending=[False]).head(10), zoom=11.5)
-
-imap = walth_polys.reset_index()[["OA21CD", "geometry_l"]].explore(m=imap,     style_kwds=dict(
-        color="black", weight=1, fillOpacity=0.1
-        ))
+imap = viz_revised_coordinates(
+    walth_centroids[
+        ["snap_dist_m", "geometry", "OA21CD", "snapped_geometry", "lines"]
+        ].sort_values(
+            by=["snap_dist_m"], ascending=[False]).head(10), zoom=11.5)
+imap = walth_polys.reset_index()[["OA21CD", "geometry_l"]].explore(
+    m=imap, style_kwds=dict(color="black", weight=1, fillOpacity=0.1)
+    )
 imap
 ```
 
-As can be seen from the map, some points now do fall outside of the polygon they are intended to represent. We can account for this adjustment by adding an average walking time penalty to computed travel times.
+As can be seen from the map, some points now do fall outside of the polygon
+they are intended to represent. We can account for this adjustment by adding an
+average walking time penalty to computed travel times.
 
 ```{python}
 #| include: false
 # tidy up environment & dataframes
-walth_centroids = walth_centroids.loc[:, ["OA21CD",  "snapped_geometry", "lines", "snap_dist_m"]
-    ]
+walth_centroids = walth_centroids.loc[:, [
+    "OA21CD",  "snapped_geometry", "lines", "snap_dist_m"]]
 walth_centroids.set_geometry("snapped_geometry", inplace=True)
 walth_polys = walth_polys.reset_index().loc[:, ["OA21CD", "geometry_l"]]
 proximal_gps.drop("geometry", axis=1, inplace=True)
@@ -477,16 +428,16 @@ del centroids
 
 ## Calculate Travel Times
 
-Compute travel times from centroids to proximal surgeries
+Compute travel times from centroids to proximal surgeries. Add a walking time
+penalty to account for the snap distance. Use walking speed of 4.8km/h,
+consistent with DfT travel time work. Calculate median travel times across
+surgeries.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 # journey time with todays date
 walth_centroids["id"] = list(range(0, len(walth_centroids)))
 proximal_gps["id"] = list(range(0, len(proximal_gps)))
 dept_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
-
 travel_time_matrix = r5py.TravelTimeMatrixComputer(
     tn,
     origins=walth_centroids,
@@ -497,23 +448,13 @@ travel_time_matrix = r5py.TravelTimeMatrixComputer(
     snap_to_network=False,
     max_time=timedelta(minutes=30), # 30 minute journey max 
 ).compute_travel_times()
-travel_time_matrix.head()
-```
-
-### Add a Walking Time Penalty
-
-Use walking speed of 4.8km/h, consistent with DfT travel time work.
-
-Calculate median travel times across surgeries.
-
-```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
-walth_centroids["walk_penalty_mins"] = walth_centroids["snap_dist_m"] / 4800.0 * 60
-med_tts_1 = travel_time_matrix.drop("to_id", axis=1).groupby("from_id").median()
+walth_centroids["walk_penalty_mins"] = walth_centroids["snap_dist_m"] / 4800.0\
+     * 60
+med_tts_1 = travel_time_matrix.drop(
+    "to_id", axis=1).groupby("from_id").median()
 med_tts_1 = med_tts_1.join(walth_centroids.set_index("id"))
-med_tts_1["travel_time"] = med_tts_1["travel_time"] + med_tts_1["walk_penalty_mins"]
-
+med_tts_1["travel_time"] = med_tts_1["travel_time"] +\
+     med_tts_1["walk_penalty_mins"]
 med_tts_1 = med_tts_1.set_index("OA21CD").join(
     walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
 med_tts_1 = gpd.GeoDataFrame(med_tts_1, geometry="geometry_l", crs=4326)
@@ -527,8 +468,6 @@ med_tts_1.head()
 Use the selection widget on the right of the map to toggle layers on and off.
 
 ```{python}
-#| code-fold: true
-#| code-summary: "Click to show code"
 imap = med_tts_1.explore(
     "travel_time",
     cmap="viridis_r",
@@ -543,13 +482,13 @@ imap = proximal_gps.set_geometry("snapped_geometry").explore(
             color="green", icon="briefcase-medical", prefix="fa"),
     }, name="destinations"
 )
-imap = walth_centroids.set_geometry("snapped_geometry").reset_index()[["snapped_geometry", "OA21CD"]].explore(
+imap = walth_centroids.set_geometry("snapped_geometry").reset_index()[
+    ["snapped_geometry", "OA21CD"]].explore(
     m=imap, color="navy", opacity=0.2, name="origins")
 imap.save(
-    "outputs/walthamstow-surgeries//median_tt_to_surgeries_5km_buffer.html")
+    "outputs/walthamstow-surgeries/median_tt_to_surgeries_5km_buffer.html")
 folium.LayerControl().add_to(imap)
 imap
-
 ```
 
 This is an interesting situation - the high density of destinations in this
@@ -560,7 +499,6 @@ map.
 It may not be reasonable to consider all these options for each centroid. You
 could potentially draw a smaller buffer around each output area instead, and
 then calculate travel times to a smaller subset of proximal GPs.
-
 
 ### Option 2: Nearest 3 Surgeries
 
@@ -603,14 +541,13 @@ imap.save(
     "outputs/walthamstow-surgeries//median_tt_to_surgeries_3_closest.html")
 folium.LayerControl().add_to(imap)
 imap
-
 ```
-
 
 ### Option 3: Output Area 1km buffer
 
 Buffer each output area by 1km and consider travel times to surgeries falling
-within those extents only.
+within those extents only. Find surgeries for each buffered output area. Check
+on surgeries within one output area.
 
 ```{python}
 walth_polys["buffered_oas"] = walth_polys.to_crs(
@@ -618,12 +555,6 @@ walth_polys["buffered_oas"] = walth_polys.to_crs(
 walth_polys.set_geometry("buffered_oas", inplace=True)
 walth_polys["buffered_area_m"] = walth_polys.area
 walth_polys.to_crs(4326, inplace=True)
-
-```
-
-Find surgeries for each buffered output area.
-
-```{python}
 found_surgeries = gpd.GeoDataFrame()
 for i, r in walth_polys.iterrows():
     buff_gdf = gpd.GeoDataFrame(
@@ -631,12 +562,7 @@ for i, r in walth_polys.iterrows():
         index=[0], crs=4326)
     out_df = buff_gdf.sjoin(geocd_surgeries, how="right").dropna()
     found_surgeries = gpd.GeoDataFrame(
-        pd.concat( [found_surgeries, out_df], ignore_index=True) )
-```
-
-Check on surgeries within one output area.
-
-```{python}
+        pd.concat( [found_surgeries, out_df], ignore_index=True))
 which_oa = "E00021834"
 imap = found_surgeries.query("OA21CD == @which_oa").explore(
     marker_type="marker",
@@ -649,7 +575,8 @@ imap = found_surgeries.query("OA21CD == @which_oa").explore(
 imap = walth_polys.query("OA21CD == @which_oa").explore(
     m=imap, style_kwds={"color":"black", "fillOpacity":0.1})
 # show the original polygon
-imap = walth_polys.query("OA21CD == @which_oa").set_geometry("geometry_l").explore(
+imap = walth_polys.query("OA21CD == @which_oa").set_geometry(
+    "geometry_l").explore(
     m=imap, style_kwds={"color": "purple", "fillOpacity":0.5}
 )
 # get all surgeries that are not within the buffered OA
@@ -665,22 +592,24 @@ imap = geocd_surgeries.loc[~geocd_surgeries["geometry"].isin(
 imap
 ```
 
-
-Calculate  Number of surgeries and travel times for each output area
-
-```{python}
-n_surgeries = found_surgeries.groupby("OA21CD")["Organisation Name"].count().to_frame()
-walth_centroids = walth_centroids.set_index("OA21CD").join(n_surgeries).reset_index()
-walth_centroids.rename(columns={"Organisation Name": "n_surgeries"}, inplace=True)
-
-```
+Calculate  Number of surgeries and travel times for each output area. With this
+option, the output areas are routed to unequal numbers of surgeries. Though
+every output area has at least one destination.
 
 ```{python}
+n_surgeries = found_surgeries.groupby(
+    "OA21CD")["Organisation Name"].count().to_frame()
+walth_centroids = walth_centroids.set_index(
+    "OA21CD").join(n_surgeries).reset_index()
+walth_centroids.rename(
+    columns={"Organisation Name": "n_surgeries"}, inplace=True)
 opt_3_pth = here("data/interim/walthamstow-oa-1km-buffer-surgery-tts.parquet")
 if not os.path.exists(opt_3_pth):
     tt_matrix_2 = pd.DataFrame()
     for i, row in walth_centroids.iterrows():
-        row_gdf = gpd.GeoDataFrame({"id": row["id"], "geometry": row["snapped_geometry"]}, index=[0], crs=4326)
+        row_gdf = gpd.GeoDataFrame(
+            {"id": row["id"], "geometry": row["snapped_geometry"]},
+            index=[0], crs=4326)
         tts = r5py.TravelTimeMatrixComputer(
             tn,
             origins=row_gdf,
@@ -696,27 +625,59 @@ if not os.path.exists(opt_3_pth):
 else:
     tt_matrix_2 = pd.read_parquet(opt_3_pth)
 
-```
-
-With this option, the output areas are routed to unequal numbers of surgeries. Though every output area has at least one destination.
-
-```{python}
 med_tts_3 = tt_matrix_2.drop("to_id", axis=1).groupby("from_id").median()
 med_tts_3 = med_tts_3.join(walth_centroids.set_index("id"))
 # add the walk time penalty
-med_tts_3["travel_time"] = med_tts_3["travel_time"] + med_tts_3["walk_penalty_mins"]
+med_tts_3["travel_time"] = med_tts_3["travel_time"] +\
+     med_tts_3["walk_penalty_mins"]
 med_tts_3["n_surgeries"].describe()
-
 ```
 
-As can be seen below, travel time does trend by the number of surgeries
-in scope of the buffered output areas. This scenario is distinct to options 1 and 2 in that respect.
+As can be seen below, travel time does trend by the number of surgeries in
+scope of the buffered output areas. This scenario is distinct to options 1 and
+2 in that respect.
 
 ```{python}
 # normalise n_surgeries, get areas from the polygons
-med_tts_3 = walth_polys.loc[:, ["OA21CD", "buffered_area_m"]].set_index("OA21CD").join(med_tts_3.set_index("OA21CD"))
-med_tts_3["surgeries_per_km2"] = med_tts_3["n_surgeries"] / (med_tts_3["buffered_area_m"]/1_000_000)
-med_tts_3.plot.scatter(x="surgeries_per_km2", y="travel_time", title="Median Travel Time by Surgeries per KM2")
+med_tts_3 = walth_polys.loc[:, ["OA21CD", "buffered_area_m"]].set_index(
+    "OA21CD").join(med_tts_3.set_index("OA21CD"))
+med_tts_3["surgeries_per_km2"] = med_tts_3["n_surgeries"] / (
+    med_tts_3["buffered_area_m"]/1_000_000)
+med_tts_3.plot.scatter(
+    x="surgeries_per_km2", y="travel_time",
+    title="Median Travel Time by Surgeries per KM2")
 plt.show()
+```
 
+```{python}
+med_tts_3 = med_tts_3.join(
+    walth_polys.set_index("OA21CD"), lsuffix="_l", rsuffix="_r")
+med_tts_3 = gpd.GeoDataFrame(
+    med_tts_3[
+        [
+            "geometry_l",
+            "travel_time",
+            "snap_dist_m",
+            "walk_penalty_mins",
+            "n_surgeries",
+            "surgeries_per_km2"]
+            ], geometry="geometry_l", crs=4326)
+imap = med_tts_3.explore(
+    "travel_time",
+    cmap="viridis_r",
+    tiles="CartoDB positron",
+    zoom_start=12,
+    name="OA21 polygons")
+imap = proximal_gps.explore(
+    m = imap,
+    marker_type="marker",
+    marker_kwds={
+        "icon": folium.map.Icon(
+            color="green", icon="briefcase-medical", prefix="fa"),
+    }, name="destinations"
+)
+imap = walth_centroids.reset_index().explore(
+    m=imap, color="navy", opacity=0.2, name="origins")
+folium.LayerControl().add_to(imap)
+imap
 ```
