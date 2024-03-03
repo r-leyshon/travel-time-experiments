@@ -38,4 +38,5 @@ git+https://github.com/datasciencecampus/transport-network-performance
 tqdm
 jupyter
 contextily
+odfpy
 -e .

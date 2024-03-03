@@ -39,6 +39,7 @@ import glob
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from time import sleep
 import toml
 
@@ -500,20 +501,22 @@ It may not be reasonable to consider all these options for each centroid. You
 could potentially draw a smaller buffer around each output area instead, and
 then calculate travel times to a smaller subset of proximal GPs.
 
-### Option 2: Nearest 3 Surgeries
+### Option 2: Nearest 10 Surgeries
 
 This option is used to model greater patient discrimination in surgery
 selection, due to the wealth of surgeries in the vicinity. In this scenario, 
-patients select from the 3 surgeries with the smallest travel time only. Each
-centroid gets a median travel time across these 3 shortest journies only.
+patients select from the 10 surgeries with the smallest travel time only. Each
+centroid gets a median travel time across these 10 shortest journies only.
+
+This is similar to the method used to calculate [DfT's Journey Time Statistics](https://www.gov.uk/government/publications/journey-time-statistics-guidance/journey-time-statistics-notes-and-definitions-2019#calculation).
 
 ```{python}
-fast_3 = travel_time_matrix.sort_values(
+fast_n = travel_time_matrix.sort_values(
     ["from_id", "travel_time"], ascending=[True, True]
     ).groupby(
-        "from_id").head(3).drop("to_id", axis=1).groupby("from_id").median()
+        "from_id").head(10).drop("to_id", axis=1).groupby("from_id").median()
 
-med_tts_2 = fast_3.join(walth_centroids.set_index("id"))
+med_tts_2 = fast_n.join(walth_centroids.set_index("id"))
 med_tts_2["travel_time"] = med_tts_2["travel_time"] + \
     med_tts_2["walk_penalty_mins"]
 med_tts_2 = med_tts_2.set_index(
